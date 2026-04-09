@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "shieldprompt"
+version = "0.1.0"
+description = "Privacy bridge for LLMs — mask PII before it leaves your machine."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+authors = [
+    { name = "ShieldPrompt Contributors" },
+]
+keywords = ["pii", "privacy", "llm", "masking", "gdpr", "hipaa"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+    "Topic :: Software Development :: Libraries",
+]
+dependencies = []
+
+[project.optional-dependencies]
+ner = ["transformers>=4.30.0", "torch>=2.0.0", "span-marker>=1.5.0"]
+fastapi = ["fastapi>=0.100.0", "starlette>=0.27.0"]
+all = ["shieldprompt[ner,fastapi]"]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "httpx>=0.24",
+    "fastapi>=0.100.0",
+    "starlette>=0.27.0",
+]
+
+[project.scripts]
+shieldprompt = "shieldprompt.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/shieldprompt/shieldprompt"
+Documentation = "https://github.com/shieldprompt/shieldprompt#readme"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/shieldprompt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
