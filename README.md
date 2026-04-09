@@ -111,10 +111,31 @@ echo "Call me at +1-415-555-1234" | shieldprompt mask
 shieldprompt mask --file input.txt --save-vault vault.json
 ```
 
+### Anonymize a file in-place (creates sidecar vault automatically)
+
+```bash
+shieldprompt mask --file secrets.txt --in-place --no-ner
+# writes masked text back to secrets.txt
+# saves mappings to secrets.txt.shieldprompt.vault.json
+```
+
 ### Unmask with vault
 
 ```bash
 shieldprompt unmask "[EMAIL_ADDRESS_1]" --vault vault.json
+```
+
+### Restore original text in-place
+
+```bash
+shieldprompt unmask --file secrets.txt --in-place
+# by default reads secrets.txt.shieldprompt.vault.json
+```
+
+### Show token-to-original mappings
+
+```bash
+shieldprompt map --file secrets.txt --json
 ```
 
 ### Inspect detected entities

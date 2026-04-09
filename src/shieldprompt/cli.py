@@ -5,6 +5,9 @@ Usage:
     echo "some text" | shieldprompt mask
     shieldprompt unmask "[EMAIL_ADDRESS_1]" --vault vault.json
     shieldprompt mask --file input.txt --save-vault vault.json
+    shieldprompt mask --file secrets.txt --in-place --no-ner
+    shieldprompt unmask --file secrets.txt --in-place
+    shieldprompt map --file secrets.txt
 """
 
 from __future__ import annotations
@@ -24,7 +27,6 @@ def _load_vault(path: str) -> Vault:
     vault = Vault()
     data = json.loads(Path(path).read_text())
     for token, real in data.items():
-        entity_type = token.split("_")[0].lstrip("[")
         vault._token_to_real[token] = real
         vault._real_to_token[real] = token
     return vault
@@ -33,6 +35,21 @@ def _load_vault(path: str) -> Vault:
 def _save_vault(vault: Vault, path: str) -> None:
     """Save vault mappings to a JSON file."""
     Path(path).write_text(json.dumps(vault.mappings, indent=2))
+
+
+def _default_vault_path(file_path: str) -> str:
+    """Default sidecar vault path for a source file."""
+    return f"{file_path}.shieldprompt.vault.json"
+
+
+def _resolve_vault_path(file_path: str | None, explicit_path: str | None) -> str:
+    """Resolve vault path from an explicit argument or a file sidecar."""
+    if explicit_path:
+        return explicit_path
+    if file_path:
+        return _default_vault_path(file_path)
+    print("Error: provide --vault when not using --file", file=sys.stderr)
+    sys.exit(1)
 
 
 def main() -> None:
@@ -53,14 +70,24 @@ def main() -> None:
     mask_p.add_argument(
         "--save-vault", "-s", help="Save vault mappings to JSON file"
     )
+    mask_p.add_argument(
+        "--in-place",
+        "-i",
+        action="store_true",
+        help="When used with --file, overwrite the file with masked text",
+    )
     mask_p.add_argument("--no-ner", action="store_true", help="Disable NER model")
 
     # --- unmask ---
     unmask_p = sub.add_parser("unmask", help="Unmask tokens back to real values")
     unmask_p.add_argument("text", nargs="?", help="Text to unmask (or pipe via stdin)")
     unmask_p.add_argument("--file", "-f", help="Read text from file")
+    unmask_p.add_argument("--vault", "-v", help="Path to vault JSON file")
     unmask_p.add_argument(
-        "--vault", "-v", required=True, help="Path to vault JSON file"
+        "--in-place",
+        "-i",
+        action="store_true",
+        help="When used with --file, overwrite the file with unmasked text",
     )
 
     # --- inspect ---
@@ -68,6 +95,15 @@ def main() -> None:
     inspect_p.add_argument("text", nargs="?", help="Text to inspect (or stdin)")
     inspect_p.add_argument("--file", "-f", help="Read text from file")
     inspect_p.add_argument("--no-ner", action="store_true", help="Disable NER model")
+
+    # --- map ---
+    map_p = sub.add_parser(
+        "map",
+        help="Show token->original mappings from a vault file",
+    )
+    map_p.add_argument("--file", "-f", help="Original file path (uses default sidecar vault)")
+    map_p.add_argument("--vault", "-v", help="Path to vault JSON file")
+    map_p.add_argument("--json", action="store_true", help="Print mappings as JSON")
 
     args = parser.parse_args()
 
@@ -77,6 +113,8 @@ def main() -> None:
         _cmd_unmask(args)
     elif args.command == "inspect":
         _cmd_inspect(args)
+    elif args.command == "map":
+        _cmd_map(args)
 
 
 def _get_text(args) -> str:
@@ -92,6 +130,10 @@ def _get_text(args) -> str:
 
 
 def _cmd_mask(args) -> None:
+    if args.in_place and not args.file:
+        print("Error: --in-place requires --file", file=sys.stderr)
+        sys.exit(1)
+
     text = _get_text(args)
     entities = {EntityType(e) for e in args.entities} if args.entities else None
     vault = Vault()
@@ -101,17 +143,35 @@ def _cmd_mask(args) -> None:
         vault=vault,
     )
     masked = shield.mask(text)
-    print(masked)
+    if args.in_place:
+        Path(args.file).write_text(masked)
+    else:
+        print(masked)
 
-    if args.save_vault:
-        _save_vault(vault, args.save_vault)
-        print(f"Vault saved to {args.save_vault}", file=sys.stderr)
+    should_save_vault = bool(args.save_vault or args.in_place)
+    if should_save_vault:
+        vault_path = args.save_vault or _default_vault_path(args.file)
+        _save_vault(vault, vault_path)
+        if args.in_place:
+            print(f"Masked file in-place: {args.file}", file=sys.stderr)
+        print(f"Vault saved to {vault_path}", file=sys.stderr)
 
 
 def _cmd_unmask(args) -> None:
+    if args.in_place and not args.file:
+        print("Error: --in-place requires --file", file=sys.stderr)
+        sys.exit(1)
+
     text = _get_text(args)
-    vault = _load_vault(args.vault)
-    print(vault.restore_text(text))
+    vault_path = _resolve_vault_path(args.file, args.vault)
+    vault = _load_vault(vault_path)
+    unmasked = vault.restore_text(text)
+
+    if args.in_place:
+        Path(args.file).write_text(unmasked)
+        print(f"Unmasked file in-place: {args.file}", file=sys.stderr)
+    else:
+        print(unmasked)
 
 
 def _cmd_inspect(args) -> None:
@@ -125,6 +185,19 @@ def _cmd_inspect(args) -> None:
         return
     for d in detections:
         print(f"  {d.entity_type:20s}  {d.value!r:30s}  (pos {d.start}-{d.end}, score={d.score:.2f})")
+
+
+def _cmd_map(args) -> None:
+    vault_path = _resolve_vault_path(args.file, args.vault)
+    mappings = _load_vault(vault_path).mappings
+    if args.json:
+        print(json.dumps(mappings, indent=2))
+        return
+    if not mappings:
+        print("No mappings found.")
+        return
+    for token, real in mappings.items():
+        print(f"{token} -> {real}")
 
 
 if __name__ == "__main__":
