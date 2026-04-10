@@ -2,8 +2,11 @@
 
 Usage:
     shieldprompt mask "My email is alice@example.com"
+    shieldprompt pii "My email is alice@example.com"
     echo "some text" | shieldprompt mask
+    echo "some text" | pii
     shieldprompt unmask "[EMAIL_ADDRESS_1]" --vault vault.json
+    retrace "[EMAIL_ADDRESS_1]" --vault vault.json
     shieldprompt mask --file input.txt --save-vault vault.json
     shieldprompt mask --file secrets.txt --in-place --no-ner
     shieldprompt unmask --file secrets.txt --in-place
@@ -52,15 +55,15 @@ def _resolve_vault_path(file_path: str | None, explicit_path: str | None) -> str
     sys.exit(1)
 
 
-def main() -> None:
+def _build_parser(prog: str = "shieldprompt") -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="shieldprompt",
+        prog=prog,
         description="Mask or unmask PII in text.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
     # --- mask ---
-    mask_p = sub.add_parser("mask", help="Mask PII in text")
+    mask_p = sub.add_parser("mask", aliases=["pii"], help="Mask PII in text")
     mask_p.add_argument("text", nargs="?", help="Text to mask (or pipe via stdin)")
     mask_p.add_argument("--file", "-f", help="Read text from file")
     mask_p.add_argument(
@@ -79,7 +82,11 @@ def main() -> None:
     mask_p.add_argument("--no-ner", action="store_true", help="Disable NER model")
 
     # --- unmask ---
-    unmask_p = sub.add_parser("unmask", help="Unmask tokens back to real values")
+    unmask_p = sub.add_parser(
+        "unmask",
+        aliases=["retrace", "restore"],
+        help="Unmask tokens back to real values",
+    )
     unmask_p.add_argument("text", nargs="?", help="Text to unmask (or pipe via stdin)")
     unmask_p.add_argument("--file", "-f", help="Read text from file")
     unmask_p.add_argument("--vault", "-v", help="Path to vault JSON file")
@@ -104,16 +111,25 @@ def main() -> None:
     map_p.add_argument("--file", "-f", help="Original file path (uses default sidecar vault)")
     map_p.add_argument("--vault", "-v", help="Path to vault JSON file")
     map_p.add_argument("--json", action="store_true", help="Print mappings as JSON")
+    return parser
 
-    args = parser.parse_args()
 
-    if args.command == "mask":
+def main(argv: list[str] | None = None, prog: str = "shieldprompt") -> None:
+    parser = _build_parser(prog=prog)
+    args = parser.parse_args(argv)
+    command = {
+        "pii": "mask",
+        "retrace": "unmask",
+        "restore": "unmask",
+    }.get(args.command, args.command)
+
+    if command == "mask":
         _cmd_mask(args)
-    elif args.command == "unmask":
+    elif command == "unmask":
         _cmd_unmask(args)
-    elif args.command == "inspect":
+    elif command == "inspect":
         _cmd_inspect(args)
-    elif args.command == "map":
+    elif command == "map":
         _cmd_map(args)
 
 
@@ -198,6 +214,16 @@ def _cmd_map(args) -> None:
         return
     for token, real in mappings.items():
         print(f"{token} -> {real}")
+
+
+def pii_main() -> None:
+    """Entry point for the short `pii` command."""
+    main(argv=["mask", *sys.argv[1:]], prog="pii")
+
+
+def retrace_main() -> None:
+    """Entry point for the short `retrace` command."""
+    main(argv=["unmask", *sys.argv[1:]], prog="retrace")
 
 
 if __name__ == "__main__":

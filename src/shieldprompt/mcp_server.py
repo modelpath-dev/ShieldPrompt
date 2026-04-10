@@ -55,7 +55,7 @@ def _handle_initialize(id: Any, params: dict) -> dict:
         "capabilities": {"tools": {}},
         "serverInfo": {
             "name": "shieldprompt",
-            "version": "0.1.0",
+            "version": "0.1.2",
         },
     })
 

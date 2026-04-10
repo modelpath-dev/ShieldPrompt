@@ -61,3 +61,52 @@ def test_file_mask_unmask_roundtrip_with_default_sidecar(tmp_path, monkeypatch, 
     )
     restored = text_path.read_text()
     assert restored == original
+
+
+def test_short_aliases_pii_and_retrace(tmp_path, monkeypatch):
+    original = "Email alice@example.com and phone +1-415-555-1234"
+    text_path = tmp_path / "secret.txt"
+    text_path.write_text(original)
+
+    _run_cli(
+        monkeypatch,
+        "pii",
+        "--file",
+        str(text_path),
+        "--entities",
+        "EMAIL_ADDRESS",
+        "PHONE_NUMBER",
+        "--in-place",
+        "--no-ner",
+    )
+    masked = text_path.read_text()
+    assert "[EMAIL_ADDRESS_1]" in masked
+    assert "[PHONE_NUMBER_1]" in masked
+
+    _run_cli(monkeypatch, "retrace", "--file", str(text_path), "--in-place")
+    assert text_path.read_text() == original
+
+
+def test_direct_entrypoint_commands(tmp_path, monkeypatch):
+    original = "alice@example.com"
+    text_path = tmp_path / "direct.txt"
+    text_path.write_text(original)
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "pii",
+            "--file",
+            str(text_path),
+            "--entities",
+            "EMAIL_ADDRESS",
+            "--in-place",
+            "--no-ner",
+        ],
+    )
+    cli.pii_main()
+    assert "[EMAIL_ADDRESS_1]" in text_path.read_text()
+
+    monkeypatch.setattr("sys.argv", ["retrace", "--file", str(text_path), "--in-place"])
+    cli.retrace_main()
+    assert text_path.read_text() == original

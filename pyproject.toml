@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "shieldprompt"
-version = "0.1.1"
+version = "0.1.2"
 description = "Privacy bridge for LLMs — mask PII before it leaves your machine."
 readme = "README.md"
 license = {text = "MIT"}
@@ -37,6 +37,8 @@ dev = [
 
 [project.scripts]
 shieldprompt = "shieldprompt.cli:main"
+pii = "shieldprompt.cli:pii_main"
+retrace = "shieldprompt.cli:retrace_main"
 
 [project.urls]
 Homepage = "https://github.com/shieldprompt/shieldprompt"
