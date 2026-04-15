@@ -42,6 +42,23 @@ def test_clear():
     assert vault.mappings == {}
 
 
+def test_to_dict_and_from_dict_roundtrip():
+    original = Vault()
+    original.store("EMAIL_ADDRESS", "alice@example.com")
+    original.store("PHONE_NUMBER", "+1-415-555-1234")
+
+    snapshot = original.to_dict()
+    assert snapshot == {
+        "[EMAIL_ADDRESS_1]": "alice@example.com",
+        "[PHONE_NUMBER_1]": "+1-415-555-1234",
+    }
+
+    rebuilt = Vault.from_dict(snapshot)
+    assert rebuilt.restore("[EMAIL_ADDRESS_1]") == "alice@example.com"
+    text = "Hi [EMAIL_ADDRESS_1] at [PHONE_NUMBER_1]"
+    assert rebuilt.restore_text(text) == "Hi alice@example.com at +1-415-555-1234"
+
+
 def test_context_var_isolation():
     vault1 = Vault()
     vault1.store("PERSON", "Alice")
