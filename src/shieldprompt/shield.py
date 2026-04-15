@@ -2,12 +2,24 @@
 
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 from .detector.hybrid import HybridDetector
 from .detector.regex_engine import RegexDetector
 from .entities import DEFAULT_ENTITIES, NER_ENTITIES, EntityType
 from .vault import Vault, get_vault
+
+
+# Matches our own token format: [ENTITY_N]. If a user types one of these
+# directly, unmask would replace it with a real value from the vault, leaking
+# an earlier secret. Neutralize by inserting a zero-width space so the bracket
+# text survives for the user but does not match the vault key.
+_TOKEN_SHAPE = re.compile(r"\[([A-Z][A-Z_]*_\d+)\]")
+
+
+def _neutralize_user_tokens(text: str) -> str:
+    return _TOKEN_SHAPE.sub(lambda m: "[\u200b" + m.group(1) + "]", text)
 
 
 class Shield:
@@ -39,15 +51,17 @@ class Shield:
         )
         self._vault = vault
 
-        # Decide whether to use NER
-        needs_ner = bool(self._entities & NER_ENTITIES)
-        if use_ner is False or not needs_ner:
+        # Use HybridDetector whenever any NER-category entity is requested, so
+        # the name-dictionary recognizer runs even if transformer NER is off.
+        needs_ner_category = bool(self._entities & NER_ENTITIES)
+        if not needs_ner_category:
             self._detector = RegexDetector(entities=self._entities)
         else:
             self._detector = HybridDetector(
                 entities=self._entities,
                 ner_model=ner_model,
                 ner_threshold=ner_threshold,
+                use_ner=False if use_ner is False else True,
             )
 
     @property
@@ -56,6 +70,7 @@ class Shield:
 
     def mask(self, text: str) -> str:
         """Detect PII and replace with tokens. Returns masked text."""
+        text = _neutralize_user_tokens(text)
         detections = self._detector.detect(text)
         if not detections:
             return text
