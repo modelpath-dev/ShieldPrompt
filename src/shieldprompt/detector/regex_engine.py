@@ -3,10 +3,41 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Optional
 
 from ..entities import EntityType
+
+
+_ZERO_WIDTH = {"\u200b", "\u200c", "\u200d", "\ufeff", "\u2060"}
+_DASH_CHARS = {"\u2010", "\u2011", "\u2012", "\u2013", "\u2014", "\u2212"}
+_SPACE_CHARS = {"\u00a0", "\u2007", "\u202f", "\u2009", "\u200a", "\u2002", "\u2003"}
+
+
+def _normalize_for_match(text: str) -> str:
+    """NFKC + strip zero-width + fold exotic dashes/spaces to ASCII.
+
+    Preserves string length so detection offsets still index into the
+    original text. Zero-width chars are replaced with a space rather than
+    removed to keep positions aligned.
+    """
+    out_chars: list[str] = []
+    for ch in unicodedata.normalize("NFKC", text):
+        if ch in _ZERO_WIDTH:
+            out_chars.append(" ")
+        elif ch in _DASH_CHARS:
+            out_chars.append("-")
+        elif ch in _SPACE_CHARS:
+            out_chars.append(" ")
+        else:
+            out_chars.append(ch)
+    result = "".join(out_chars)
+    # NFKC can change length (e.g. ligatures). If so, fall back to original
+    # to keep offsets valid — we lose normalization but don't corrupt spans.
+    if len(result) != len(text):
+        return text
+    return result
 
 
 @dataclass
@@ -114,13 +145,19 @@ class RegexDetector:
     def detect(self, text: str) -> list[Detection]:
         """Scan text and return all detected PII spans."""
         detections: list[Detection] = []
+        # Run regex over normalized text so Unicode dashes / zero-width chars
+        # don't let attackers slip past the patterns. Offsets stay aligned
+        # because _normalize_for_match preserves length.
+        search_text = _normalize_for_match(text)
 
         for entity_type, pattern, validator in _PATTERNS:
             if self._entities and entity_type not in self._entities:
                 continue
 
-            for match in pattern.finditer(text):
-                value = match.group()
+            for match in pattern.finditer(search_text):
+                # Store the original (un-normalized) substring so the vault
+                # round-trips what the user actually wrote.
+                value = text[match.start():match.end()]
                 if validator and not validator(value):
                     continue
                 detections.append(
