@@ -220,14 +220,25 @@ def _cmd_map(args) -> None:
         print(f"{token} -> {real}")
 
 
+_MASK_ALIASES = {"mask", "pii"}
+_UNMASK_ALIASES = {"unmask", "retrace", "restore"}
+
+
 def pii_main() -> None:
     """Entry point for the short `pii` command."""
-    main(argv=["mask", *sys.argv[1:]], prog="pii")
+    args = sys.argv[1:]
+    # Tolerate users who write `pii mask ...` — strip the redundant subcommand.
+    if args and args[0] in _MASK_ALIASES:
+        args = args[1:]
+    main(argv=["mask", *args], prog="pii")
 
 
 def retrace_main() -> None:
     """Entry point for the short `retrace` command."""
-    main(argv=["unmask", *sys.argv[1:]], prog="retrace")
+    args = sys.argv[1:]
+    if args and args[0] in _UNMASK_ALIASES:
+        args = args[1:]
+    main(argv=["unmask", *args], prog="retrace")
 
 
 if __name__ == "__main__":
