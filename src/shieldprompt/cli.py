@@ -27,17 +27,19 @@ from .vault import Vault
 
 def _load_vault(path: str) -> Vault:
     """Load vault mappings from a JSON file."""
-    vault = Vault()
     data = json.loads(Path(path).read_text())
-    for token, real in data.items():
-        vault._token_to_real[token] = real
-        vault._real_to_token[real] = token
-    return vault
+    return Vault.from_dict(data)
 
 
 def _save_vault(vault: Vault, path: str) -> None:
-    """Save vault mappings to a JSON file."""
-    Path(path).write_text(json.dumps(vault.mappings, indent=2))
+    """Save vault mappings to a JSON file with owner-only permissions (0600)."""
+    p = Path(path)
+    p.write_text(json.dumps(vault.to_dict(), indent=2))
+    try:
+        p.chmod(0o600)
+    except OSError:
+        # chmod isn't meaningful on every platform (e.g. Windows); ignore.
+        pass
 
 
 def _default_vault_path(file_path: str) -> str:
@@ -193,8 +195,10 @@ def _cmd_unmask(args) -> None:
 def _cmd_inspect(args) -> None:
     text = _get_text(args)
     from .detector.hybrid import HybridDetector
+    from .entities import REGEX_ENTITIES
 
-    detector = HybridDetector()
+    entities = REGEX_ENTITIES if args.no_ner else None
+    detector = HybridDetector(entities=entities)
     detections = detector.detect(text)
     if not detections:
         print("No PII detected.")
