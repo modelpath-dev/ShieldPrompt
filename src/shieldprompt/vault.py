@@ -54,6 +54,20 @@ class Vault:
         """Return a copy of token->real mappings (for debugging)."""
         return dict(self._token_to_real)
 
+    def to_dict(self) -> dict[str, str]:
+        """Return a copy of token->real mappings, suitable for JSON serialization."""
+        return dict(self._token_to_real)
+
+    @classmethod
+    def from_dict(cls, mappings: dict[str, str]) -> "Vault":
+        """Rebuild a Vault from a token->real mapping dict."""
+        vault = cls()
+        with vault._lock:
+            for token, real in mappings.items():
+                vault._token_to_real[token] = real
+                vault._real_to_token[real] = token
+        return vault
+
     def clear(self) -> None:
         """Wipe all mappings."""
         with self._lock:
