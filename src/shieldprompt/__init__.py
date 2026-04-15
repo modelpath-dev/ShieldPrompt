@@ -8,7 +8,7 @@ from .entities import EntityType
 from .shield import Shield
 from .vault import Vault, get_vault
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 
 __all__ = [
     "Shield",
