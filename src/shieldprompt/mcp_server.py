@@ -33,9 +33,9 @@ def _get_shield(entities: list[str] | None = None) -> Shield:
     global _session_shield
     if _session_shield is None:
         entity_set = {EntityType(e) for e in entities} if entities else None
-        _session_shield = Shield(
-            entities=entity_set, use_ner=False, vault=_session_vault
-        )
+        # NER on by default so PERSON / ORG / LOCATION actually get masked —
+        # Presidio is a hard dependency since 0.1.4, no ImportError risk.
+        _session_shield = Shield(entities=entity_set, vault=_session_vault)
     return _session_shield
 
 
@@ -55,7 +55,7 @@ def _handle_initialize(id: Any, params: dict) -> dict:
         "capabilities": {"tools": {}},
         "serverInfo": {
             "name": "shieldprompt",
-            "version": "0.1.2",
+            "version": "0.1.4",
         },
     })
 
