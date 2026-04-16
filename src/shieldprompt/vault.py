@@ -23,6 +23,12 @@ class Vault:
 
     def store(self, entity_type: str, real_value: str) -> str:
         """Store a real value and return its token. Idempotent for same value."""
+        # Coerce EntityType enum members to their string value. Python 3.11
+        # changed Enum.__format__ to delegate to __str__, so on 3.12+ an
+        # enum member formats as "EntityType.PHONE_NUMBER" instead of
+        # "PHONE_NUMBER". Do this once here so callers can pass either.
+        entity_type = getattr(entity_type, "value", entity_type)
+
         with self._lock:
             if real_value in self._real_to_token:
                 return self._real_to_token[real_value]
