@@ -10,6 +10,17 @@ def test_store_and_restore():
     assert vault.restore(token) == "test@example.com"
 
 
+def test_store_accepts_enum_entity_type():
+    """Python 3.11 changed Enum.__format__; passing EntityType must still
+    yield a clean token like [PHONE_NUMBER_1], never [EntityType.PHONE_NUMBER_1]."""
+    from shieldprompt.entities import EntityType
+
+    vault = Vault()
+    token = vault.store(EntityType.PHONE_NUMBER, "+1-415-555-1234")
+    assert token == "[PHONE_NUMBER_1]"
+    assert vault.restore(token) == "+1-415-555-1234"
+
+
 def test_idempotent_store():
     vault = Vault()
     t1 = vault.store("EMAIL_ADDRESS", "test@example.com")
