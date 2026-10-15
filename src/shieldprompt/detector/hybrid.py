@@ -15,7 +15,7 @@ class HybridDetector:
     """Combines regex (fast, deterministic) and NER (contextual) detection.
 
     NER backend selection order:
-      1. Presidio (presidio-analyzer + spaCy en_core_web_lg) — preferred
+      1. Presidio (presidio-analyzer + spaCy en_core_web_sm) — preferred
       2. HuggingFace transformer (dslim/bert-base-NER) — fallback
       3. Regex only — if neither is installed
     """
@@ -81,7 +81,7 @@ class HybridDetector:
         except ImportError:
             logger.info(
                 "No NER backend installed — regex-only detection. "
-                "Install with: pip install shieldprompt[presidio] "
+                "Reinstall shieldprompt (Presidio is a core dependency) "
                 "or: pip install shieldprompt[ner]"
             )
             return None

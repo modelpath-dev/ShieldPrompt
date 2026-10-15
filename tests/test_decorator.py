@@ -25,9 +25,7 @@ def test_async_decorator():
         assert "bob@test.com" not in prompt
         return f"Got: {prompt}"
 
-    result = asyncio.get_event_loop().run_until_complete(
-        echo_async("Send to bob@test.com")
-    )
+    result = asyncio.run(echo_async("Send to bob@test.com"))
     assert "bob@test.com" in result
 
 
