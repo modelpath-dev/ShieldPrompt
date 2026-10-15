@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "shieldprompt"
-version = "0.1.4"
+version = "0.1.5"
 description = "Privacy bridge for LLMs — mask PII before it leaves your machine."
 readme = "README.md"
 license = {text = "MIT"}
@@ -27,7 +27,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-ner = ["transformers>=4.30.0", "torch>=2.0.0", "span-marker>=1.5.0"]
+ner = ["transformers>=4.30.0", "torch>=2.0.0"]
 fastapi = ["fastapi>=0.100.0", "starlette>=0.27.0"]
 all = ["shieldprompt[ner,fastapi]"]
 dev = [
@@ -44,8 +44,9 @@ pii = "shieldprompt.cli:pii_main"
 retrace = "shieldprompt.cli:retrace_main"
 
 [project.urls]
-Homepage = "https://github.com/shieldprompt/shieldprompt"
-Documentation = "https://github.com/shieldprompt/shieldprompt#readme"
+Homepage = "https://github.com/modelpath-dev/ShieldPrompt"
+Documentation = "https://github.com/modelpath-dev/ShieldPrompt/blob/main/SETUP.md"
+Issues = "https://github.com/modelpath-dev/ShieldPrompt/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/shieldprompt"]

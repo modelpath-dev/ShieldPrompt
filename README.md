@@ -36,7 +36,9 @@ Under the hood:
 1. **Detection** — a hybrid engine combines deterministic regex patterns
    (emails, phones, credit cards with Luhn validation, SSNs, IPs, IBANs,
    URLs, AWS/API keys) with Microsoft Presidio + spaCy NER for
-   contextual entities (people, organizations, locations).
+   contextual entities (people, organizations, locations). If Presidio
+   can't load, it falls back to a HuggingFace transformer model
+   (`pip install "shieldprompt[ner]"`).
 2. **Masking** — each detected value is stored in an in-memory vault and
    replaced with a stable token like `[PERSON_1]` or `[EMAIL_ADDRESS_2]`.
 3. **Unmasking** — after the LLM responds, tokens are mapped back to the
