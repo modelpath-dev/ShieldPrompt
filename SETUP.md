@@ -17,8 +17,10 @@ Claude Code, and using it from the CLI or Python.
 
 ## 1. Setup Claude Code
 
-ShieldPrompt includes an MCP (Model Context Protocol) server so Claude
-Code can mask PII in any conversation, automatically.
+ShieldPrompt includes an MCP helper, not a pre-send privacy filter. A model sees
+its prompt before it invokes a tool. Do not paste secrets into Claude and expect
+`shield_mask` to hide them retroactively. Use the local CLI or Python library
+before text enters any model context; review masked output before sending.
 
 ### Prerequisites
 
@@ -40,8 +42,14 @@ Code can mask PII in any conversation, automatically.
 pip install shieldprompt
 ```
 
-The first run will automatically download the spaCy `en_core_web_sm`
-model (~12 MB). No separate download step needed.
+Install the spaCy model explicitly before enabling contextual detection:
+
+```bash
+python -m spacy download en_core_web_sm
+```
+
+ShieldPrompt does not install model packages during a request. Missing models
+cause a clear failure rather than silently reducing privacy protection.
 
 ### Step 2 — Register the MCP server with Claude Code
 
@@ -78,36 +86,31 @@ You should see `shieldprompt` in the output.
 ### Step 3 — Restart Claude Code
 
 Close and reopen your Claude Code session. The ShieldPrompt tools will
-now be available: `shield_mask`, `shield_unmask`, `shield_inspect`,
-`shield_vault`, `shield_clear`.
+now be available: `shield_mask`, `shield_inspect`, `shield_clear`.
 
-### Step 4 — Try it
+### Step 4 — Keep originals outside the model context
 
-In Claude Code, type:
+Try MCP only with synthetic, non-sensitive examples. It does not automatically
+protect a conversation, intercept files, or mask prompts before Claude receives
+them. Inspection returns entity types and positions, never original values.
+The MCP server deliberately does not expose unmask or vault-export tools.
 
-> Mask the PII in this sentence: "Email alice@example.com and call
-> +1-415-555-1234, my name is Chandan Kumar."
+For real data, run masking in a local terminal first:
 
-Claude will invoke `shield_mask` and reply with:
-
+```bash
+shieldprompt mask --file input.txt --save-vault private.vault.json > masked.txt
 ```
-Email [EMAIL_ADDRESS_1] and call [PHONE_NUMBER_1], my name is [PERSON_1].
+
+Review `masked.txt`, then send only that file's contents to the model. Keep
+`input.txt` and `private.vault.json` out of the model's accessible files, prompts,
+and tools. Restore the response locally, not through a model-visible tool:
+
+```bash
+shieldprompt unmask --file response.txt --vault private.vault.json
 ```
 
-Now you can send that masked text to any external service safely. Ask
-Claude to `shield_unmask` the reply when you're done to get the real
-values back.
-
-Or if you want this in complete session. Just write
-
-~~~
-Use shield_mask for this complete session
-~~~
-
-This will work for enitre session. You write your prompt normally as you do.
-Your ShieldPrompt will handle everything.
-
-**You're live.** ShieldPrompt is active in Claude Code.
+Detection is best effort: even a functioning detector can miss sensitive values.
+Do not treat masked output as a guarantee that no personal data remains.
 
 ---
 
@@ -272,6 +275,8 @@ Each request gets its own vault, so data never leaks across users.
 - `URL`
 - `AWS_KEY`
 - `API_KEY` (OpenAI, GitHub tokens)
+- `DATE_OF_BIRTH` (common numeric date forms; not contextual birth-date inference)
+- `MONEY` (common currency-symbol/code numeric amounts)
 
 **NER-based (Presidio + spaCy, contextual):**
 
@@ -279,7 +284,6 @@ Each request gets its own vault, so data never leaks across users.
 - `ORGANIZATION`
 - `LOCATION`
 - `DATE`
-- `MONEY`
 
 ---
 
@@ -309,3 +313,23 @@ Worth post-processing if it matters.
 **Q: Does it slow things down?**
 Regex is microseconds per KB. Presidio + spaCy loads once (a couple of
 seconds) then runs fast. Network calls to the LLM dwarf both.
+
+
+## Security behavior and compatibility
+
+- NER initialization or inference failure raises an error instead of returning
+  apparently protected text. `--no-ner` / `use_ner=False` explicitly selects
+  regex-only protection; names and locations are not covered in that mode.
+- Vault outputs are created owner-only and existing vault files are not silently
+  overwritten. Choose a new vault path for each masking operation. In-place
+  masking saves the recovery vault before replacing the source; repeated masking
+  of tokenized files is refused. Keep the vault until restoration is verified.
+- Never use the source path as the vault path. Vaults contain plaintext secrets:
+  filesystem permissions do not replace encryption or appropriate file isolation.
+- Streaming responses are forwarded with placeholders intact. Restore them in a
+  trusted local client; automatic restoration applies only to bounded, complete, uncompressed JSON/text
+  responses (default limit 1 MiB). Oversized and other response types retain tokens.
+  Requests over the configurable 1 MiB default limit are rejected with HTTP 413. JSON responses are restored as structured values, then serialized.
+- The decorator supports string arguments, including variadic wrappers, and
+  recursively restores strings in list/dict responses. SDK-specific objects
+  require a caller-owned adapter.

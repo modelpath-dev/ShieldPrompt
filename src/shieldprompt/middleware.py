@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 from typing import Optional
 
 from .entities import ALL_ENTITIES, DEFAULT_ENTITIES, EntityType
 from .shield import Shield
-from .vault import Vault
+from .vault import Vault, reset_vault, set_vault
 
 logger = logging.getLogger("shieldprompt")
 
@@ -30,9 +31,18 @@ def ShieldPromptMiddleware(
     exclude_paths: Optional[list[str]] = None,
     use_ner: Optional[bool] = None,
     ner_model: str = "dslim/bert-base-NER",
+    max_request_bytes: int = 1024 * 1024,
+    max_response_bytes: int = 1024 * 1024,
 ):
     """Create and return an ASGI middleware that masks PII in requests
-    and unmasks it in responses."""
+    and unmasks it in finite JSON/text responses.
+
+    Requests larger than max_request_bytes are rejected with 413. Streaming,
+    compressed, non-text, and oversized responses are forwarded unchanged
+    (still tokenized). Streams are never buffered or partially restored.
+    """
+    if max_request_bytes <= 0 or max_response_bytes <= 0:
+        raise ValueError("Body size limits must be positive")
     try:
         from starlette.types import ASGIApp, Receive, Scope, Send, Message
     except ImportError:
@@ -41,7 +51,7 @@ def ShieldPromptMiddleware(
             "Install with: pip install shieldprompt[fastapi]"
         )
 
-    if entities:
+    if entities is not None:
         entity_set = {EntityType(e) for e in entities}
     else:
         entity_set = _SENSITIVITY_MAP.get(sensitivity, DEFAULT_ENTITIES)
@@ -51,6 +61,9 @@ def ShieldPromptMiddleware(
     class _ShieldMiddleware:
         def __init__(self, app: ASGIApp) -> None:
             self.app = app
+            self.template = Shield(
+                entities=entity_set, use_ner=use_ner, ner_model=ner_model,
+            )
 
         async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
             if scope["type"] != "http":
@@ -63,106 +76,105 @@ def ShieldPromptMiddleware(
                 return
 
             vault = Vault()
-            shield = Shield(
-                entities=entity_set,
-                use_ner=use_ner,
-                ner_model=ner_model,
-                vault=vault,
-            )
+            shield = copy.copy(self.template)
+            shield._vault = vault
 
-            # Read the entire request body first
             body_parts: list[bytes] = []
+            size = 0
             while True:
                 message = await receive()
-                body_parts.append(message.get("body", b""))
+                if message["type"] == "http.disconnect":
+                    return
+                body = message.get("body", b"")
+                size += len(body)
+                if size > max_request_bytes:
+                    await send({"type": "http.response.start", "status": 413,
+                                "headers": [(b"content-length", b"0")]})
+                    await send({"type": "http.response.body", "body": b""})
+                    return
+                body_parts.append(body)
                 if not message.get("more_body", False):
                     break
-
             full_body = b"".join(body_parts)
-
-            # Try to mask JSON body
             masked_body = full_body
             try:
-                data = json.loads(full_body)
-                masked_data = _mask_json(shield, data)
-                masked_body = json.dumps(masked_data).encode()
+                masked_body = json.dumps(_mask_json(shield, json.loads(full_body))).encode()
             except (json.JSONDecodeError, UnicodeDecodeError):
                 pass
 
-            # Update content-length in scope headers
-            new_headers = []
-            for k, v in scope.get("headers", []):
-                if k == b"content-length":
-                    new_headers.append((k, str(len(masked_body)).encode()))
-                else:
-                    new_headers.append((k, v))
-            scope["headers"] = new_headers
-
-            # Provide masked body via a new receive
+            scope = dict(scope)
+            scope["headers"] = [
+                (k, str(len(masked_body)).encode() if k.lower() == b"content-length" else v)
+                for k, v in scope.get("headers", [])
+            ]
             body_sent = False
 
             async def masked_receive() -> Message:
                 nonlocal body_sent
                 if not body_sent:
                     body_sent = True
-                    return {
-                        "type": "http.request",
-                        "body": masked_body,
-                        "more_body": False,
-                    }
-                # After body is consumed, return disconnect
-                return {"type": "http.disconnect"}
+                    return {"type": "http.request", "body": masked_body, "more_body": False}
+                # A synthetic disconnect cancels Starlette streaming responses.
+                return await receive()
 
-            # Buffer response body for unmasking
-            response_started = False
             start_message = None
-            response_parts: list[bytes] = []
+            passthrough = False
 
             async def masked_send(message: Message) -> None:
-                nonlocal response_started, start_message
-
+                nonlocal start_message, passthrough
                 if message["type"] == "http.response.start":
-                    response_started = True
                     start_message = message
                     return
-
-                if message["type"] == "http.response.body":
+                if message["type"] == "http.response.body" and not passthrough:
                     body = message.get("body", b"")
-                    more = message.get("more_body", False)
-                    response_parts.append(body)
-
-                    if not more:
-                        full_resp = b"".join(response_parts)
+                    headers = dict(start_message.get("headers", [])) if start_message else {}
+                    content_type = headers.get(b"content-type", b"").split(b";", 1)[0].lower()
+                    is_json = content_type == b"application/json" or content_type.endswith(b"+json")
+                    is_text = content_type.startswith(b"text/")
+                    passthrough = (message.get("more_body", False)
+                                   or len(body) > max_response_bytes
+                                   or b"content-encoding" in headers
+                                   or not (is_json or is_text))
+                    changed = False
+                    if not passthrough:
                         try:
-                            text = full_resp.decode()
-                            unmasked = shield.unmask(text)
-                            full_resp = unmasked.encode()
-                        except (UnicodeDecodeError, Exception):
+                            if is_json:
+                                data = json.loads(body)
+                                restored = _unmask_json(shield, data)
+                                if restored != data:
+                                    body = json.dumps(restored).encode()
+                                    changed = True
+                            else:
+                                restored = shield.unmask(body.decode()).encode()
+                                changed = restored != body
+                                body = restored
+                        except (UnicodeDecodeError, json.JSONDecodeError):
                             pass
-
-                        # Send start with updated content-length
-                        if start_message:
-                            sm = dict(start_message)
-                            new_h = []
-                            for k, v in sm.get("headers", []):
-                                if k == b"content-length":
-                                    new_h.append(
-                                        (k, str(len(full_resp)).encode())
-                                    )
-                                else:
-                                    new_h.append((k, v))
-                            sm["headers"] = new_h
-                            await send(sm)
-
-                        msg = dict(message)
-                        msg["body"] = full_resp
-                        msg["more_body"] = False
-                        await send(msg)
+                    if start_message is not None:
+                        sm = dict(start_message)
+                        if changed:
+                            # Body-dependent validators no longer describe this body.
+                            sm["headers"] = [
+                                (k, str(len(body)).encode() if k.lower() == b"content-length" else v)
+                                for k, v in sm.get("headers", [])
+                                if k.lower() not in (b"etag", b"content-md5", b"digest")
+                            ]
+                        await send(sm)
+                        start_message = None
+                    await send(dict(message, body=body))
                     return
-
+                # Preserve ASGI extensions (e.g. pathsend) without delaying start.
+                if start_message is not None:
+                    await send(start_message)
+                    start_message = None
+                    passthrough = True
                 await send(message)
 
-            await self.app(scope, masked_receive, masked_send)
+            token = set_vault(vault)
+            try:
+                await self.app(scope, masked_receive, masked_send)
+            finally:
+                reset_vault(token)
 
     return _ShieldMiddleware(app)
 
@@ -175,4 +187,16 @@ def _mask_json(shield: Shield, data):
         return {k: _mask_json(shield, v) for k, v in data.items()}
     if isinstance(data, list):
         return [_mask_json(shield, item) for item in data]
+    return data
+
+
+
+def _unmask_json(shield: Shield, data):
+    """Restore JSON values before serialization, preserving escaping and types."""
+    if isinstance(data, str):
+        return shield.unmask(data)
+    if isinstance(data, dict):
+        return {k: _unmask_json(shield, v) for k, v in data.items()}
+    if isinstance(data, list):
+        return [_unmask_json(shield, item) for item in data]
     return data

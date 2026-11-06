@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextvars
+import re
 import threading
 from typing import Optional
 
@@ -47,13 +48,14 @@ class Vault:
 
     def restore_text(self, text: str) -> str:
         """Replace all tokens in text with their real values."""
-        result = text
-        # Sort by token length descending to avoid partial replacement issues
-        for token, real in sorted(
-            self._token_to_real.items(), key=lambda x: len(x[0]), reverse=True
-        ):
-            result = result.replace(token, real)
-        return result
+        with self._lock:
+            mappings = dict(self._token_to_real)
+        if not mappings:
+            return text
+        pattern = re.compile("|".join(re.escape(token) for token in
+                                      sorted(mappings, key=len, reverse=True)))
+        # A single pass never interprets token-like text inside original values.
+        return pattern.sub(lambda match: mappings[match.group(0)], text)
 
     @property
     def mappings(self) -> dict[str, str]:
@@ -67,9 +69,18 @@ class Vault:
     @classmethod
     def from_dict(cls, mappings: dict[str, str]) -> "Vault":
         """Rebuild a Vault from a token->real mapping dict."""
+        if not isinstance(mappings, dict):
+            raise ValueError("Vault mappings must be a dictionary")
         vault = cls()
         with vault._lock:
             for token, real in mappings.items():
+                if not isinstance(token, str) or not isinstance(real, str):
+                    raise ValueError("Vault tokens and values must be strings")
+                match = re.fullmatch(r"\[([A-Z][A-Z_]*?)_([1-9][0-9]*)\]", token)
+                if not match:
+                    raise ValueError("Invalid vault token format")
+                entity, number = match.groups()
+                vault._counters[entity] = max(vault._counters.get(entity, 0), int(number))
                 vault._token_to_real[token] = real
                 vault._real_to_token[real] = token
         return vault
@@ -99,3 +110,4 @@ def set_vault(vault: Vault) -> contextvars.Token:
 def reset_vault(token: contextvars.Token) -> None:
     """Reset the vault to its previous state."""
     _vault_var.reset(token)
+

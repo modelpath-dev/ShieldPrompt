@@ -15,7 +15,11 @@ cards, and other sensitive values for reversible placeholders. When the
 model's answer comes back, the placeholders are swapped back so your users
 still see the real values.
 
-**The model never sees the real data. Your users never see placeholders.**
+**Mask locally before sending data to a model. Review output: detection can miss PII.**
+
+The MCP helper does not intercept prompts before the model sees them. Keep
+originals and vaults outside model-accessible files and restore responses locally.
+Streaming middleware responses retain placeholders for local-client restoration.
 
 ---
 
@@ -67,3 +71,4 @@ requests reviewed by the project owner.
 ## License
 
 MIT
+

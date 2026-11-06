@@ -6,7 +6,7 @@ import re
 from typing import Optional
 
 from .detector.hybrid import HybridDetector
-from .detector.regex_engine import RegexDetector
+from .detector.regex_engine import RegexDetector, merge_overlaps
 from .entities import DEFAULT_ENTITIES, NER_ENTITIES, EntityType
 from .vault import Vault, get_vault
 
@@ -30,7 +30,7 @@ class Shield:
 
     Args:
         entities: Set of entity types to detect. Defaults to common PII types.
-        use_ner: Whether to use the NER model. Auto-detected if None.
+        use_ner: Whether to use the NER model. Enabled by default; failures raise instead of exposing text.
         ner_model: HuggingFace model name for NER.
         ner_threshold: Minimum confidence for NER detections.
         vault: Optional vault instance. Uses context-local vault if None.
@@ -46,13 +46,13 @@ class Shield:
     ) -> None:
         self._entities = (
             {EntityType(e) if isinstance(e, str) else e for e in entities}
-            if entities
-            else DEFAULT_ENTITIES
+            if entities is not None
+            else set(DEFAULT_ENTITIES)
         )
         self._vault = vault
 
-        # Use HybridDetector whenever any NER-category entity is requested, so
-        # the name-dictionary recognizer runs even if transformer NER is off.
+        # Use HybridDetector whenever a contextual entity is requested.
+        # Explicit use_ner=False opts into reduced regex-only protection.
         needs_ner_category = bool(self._entities & NER_ENTITIES)
         if not needs_ner_category:
             self._detector = RegexDetector(entities=self._entities)
@@ -71,7 +71,7 @@ class Shield:
     def mask(self, text: str) -> str:
         """Detect PII and replace with tokens. Returns masked text."""
         text = _neutralize_user_tokens(text)
-        detections = self._detector.detect(text)
+        detections = merge_overlaps(text, self._detector.detect(text))
         if not detections:
             return text
 
@@ -97,3 +97,4 @@ class Shield:
     def clear(self) -> None:
         """Clear the vault mappings."""
         self.vault.clear()
+
