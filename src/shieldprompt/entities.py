@@ -32,6 +32,7 @@ REGEX_ENTITIES = {
     EntityType.IP_ADDRESS,
     EntityType.IBAN,
     EntityType.DATE_OF_BIRTH,
+    EntityType.MONEY,
     EntityType.URL,
     EntityType.AWS_KEY,
     EntityType.API_KEY,
@@ -42,7 +43,6 @@ NER_ENTITIES = {
     EntityType.ORGANIZATION,
     EntityType.LOCATION,
     EntityType.DATE,
-    EntityType.MONEY,
 }
 
 ALL_ENTITIES = REGEX_ENTITIES | NER_ENTITIES
@@ -59,3 +59,4 @@ DEFAULT_ENTITIES = {
     EntityType.ORGANIZATION,
     EntityType.LOCATION,
 }
+

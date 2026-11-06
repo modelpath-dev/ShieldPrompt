@@ -17,6 +17,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
+import tempfile
 import sys
 from pathlib import Path
 
@@ -31,15 +34,52 @@ def _load_vault(path: str) -> Vault:
     return Vault.from_dict(data)
 
 
-def _save_vault(vault: Vault, path: str) -> None:
-    """Save vault mappings to a JSON file with owner-only permissions (0600)."""
+def _sync_directory(path: Path) -> None:
+    """Make published directory entries durable before changing the source."""
+    if os.name == "posix":
+        fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
+def _atomic_write(path: str, text: str, *, exclusive: bool = False) -> None:
+    """Publish a complete private file; never expose partially written secrets."""
     p = Path(path)
-    p.write_text(json.dumps(vault.to_dict(), indent=2))
+    fd, temporary = tempfile.mkstemp(prefix=".shieldprompt-", dir=str(p.parent))
     try:
-        p.chmod(0o600)
-    except OSError:
-        # chmod isn't meaningful on every platform (e.g. Windows); ignore.
-        pass
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if exclusive:
+            # Unlike replace(), link() fails atomically if any entry already exists,
+            # including a symlink. Keep old recovery mappings at all costs.
+            os.link(temporary, p)
+        else:
+            os.replace(temporary, p)
+        _sync_directory(p.parent)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _save_vault(vault: Vault, path: str) -> None:
+    """Save a new owner-only vault without ever overwriting recovery mappings."""
+    _atomic_write(path, json.dumps(vault.to_dict(), indent=2), exclusive=True)
+
+
+def _validate_paths(file_path: str | None, vault_path: str, in_place: bool) -> None:
+    if not file_path:
+        return
+    source, vault = Path(file_path), Path(vault_path)
+    if source.resolve() == vault.resolve() or (
+        source.exists() and vault.exists() and source.samefile(vault)
+    ):
+        raise ValueError("Source and vault must be different files")
+    if in_place and (source.is_symlink() or not source.is_file()):
+        raise ValueError("In-place operations require a regular, non-symlink source file")
 
 
 def _default_vault_path(file_path: str) -> str:
@@ -125,14 +165,18 @@ def main(argv: list[str] | None = None, prog: str = "shieldprompt") -> None:
         "restore": "unmask",
     }.get(args.command, args.command)
 
-    if command == "mask":
-        _cmd_mask(args)
-    elif command == "unmask":
-        _cmd_unmask(args)
-    elif command == "inspect":
-        _cmd_inspect(args)
-    elif command == "map":
-        _cmd_map(args)
+    try:
+        if command == "mask":
+            _cmd_mask(args)
+        elif command == "unmask":
+            _cmd_unmask(args)
+        elif command == "inspect":
+            _cmd_inspect(args)
+        elif command == "map":
+            _cmd_map(args)
+    except (OSError, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 def _get_text(args) -> str:
@@ -152,7 +196,16 @@ def _cmd_mask(args) -> None:
         print("Error: --in-place requires --file", file=sys.stderr)
         sys.exit(1)
 
+    vault_path = args.save_vault or (
+        _default_vault_path(args.file) if args.in_place else None
+    )
+    if vault_path:
+        _validate_paths(args.file, vault_path, args.in_place)
+        if os.path.lexists(vault_path):
+            raise ValueError("Vault already exists; preserve it and choose a new vault path")
     text = _get_text(args)
+    if args.in_place and re.search(r"\[[A-Z][A-Z_]*_\d+\]", text):
+        raise ValueError("Refusing to mask token-containing text in-place; restore it first")
     entities = {EntityType(e) for e in args.entities} if args.entities else None
     vault = Vault()
     shield = Shield(
@@ -161,17 +214,15 @@ def _cmd_mask(args) -> None:
         vault=vault,
     )
     masked = shield.mask(text)
+    # A durable recovery vault must exist before replacing or emitting masked text.
+    if vault_path:
+        _save_vault(vault, vault_path)
     if args.in_place:
-        Path(args.file).write_text(masked)
+        _atomic_write(args.file, masked)
+        print(f"Masked file in-place: {args.file}", file=sys.stderr)
     else:
         print(masked)
-
-    should_save_vault = bool(args.save_vault or args.in_place)
-    if should_save_vault:
-        vault_path = args.save_vault or _default_vault_path(args.file)
-        _save_vault(vault, vault_path)
-        if args.in_place:
-            print(f"Masked file in-place: {args.file}", file=sys.stderr)
+    if vault_path:
         print(f"Vault saved to {vault_path}", file=sys.stderr)
 
 
@@ -180,13 +231,14 @@ def _cmd_unmask(args) -> None:
         print("Error: --in-place requires --file", file=sys.stderr)
         sys.exit(1)
 
-    text = _get_text(args)
     vault_path = _resolve_vault_path(args.file, args.vault)
+    _validate_paths(args.file, vault_path, args.in_place)
+    text = _get_text(args)
     vault = _load_vault(vault_path)
     unmasked = vault.restore_text(text)
 
     if args.in_place:
-        Path(args.file).write_text(unmasked)
+        _atomic_write(args.file, unmasked)
         print(f"Unmasked file in-place: {args.file}", file=sys.stderr)
     else:
         print(unmasked)
@@ -243,3 +295,4 @@ def retrace_main() -> None:
 
 if __name__ == "__main__":
     main()
+

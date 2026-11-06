@@ -17,7 +17,7 @@ class HybridDetector:
     NER backend selection order:
       1. Presidio (presidio-analyzer + spaCy en_core_web_sm) — preferred
       2. HuggingFace transformer (dslim/bert-base-NER) — fallback
-      3. Regex only — if neither is installed
+      Initialization and inference fail closed if NER is requested.
     """
 
     def __init__(
@@ -31,7 +31,7 @@ class HybridDetector:
         self._entities = entities
         self._ner_threshold = ner_threshold
 
-        regex_entities = entities & REGEX_ENTITIES if entities else None
+        regex_entities = entities & REGEX_ENTITIES if entities is not None else None
         self._regex = RegexDetector(entities=regex_entities)
 
         self._ner = None
@@ -51,7 +51,7 @@ class HybridDetector:
         ner_model: str,
         ner_threshold: float,
     ):
-        ner_entities = entities & NER_ENTITIES if entities else None
+        ner_entities = entities & NER_ENTITIES if entities is not None else None
 
         # Try Presidio first.
         try:
@@ -77,14 +77,15 @@ class HybridDetector:
             from .ner_engine import NERDetector
 
             logger.info("Using HuggingFace transformer NER backend: %s", ner_model)
-            return NERDetector(model_name=ner_model, entities=ner_entities)
-        except ImportError:
-            logger.info(
-                "No NER backend installed — regex-only detection. "
-                "Reinstall shieldprompt (Presidio is a core dependency) "
-                "or: pip install shieldprompt[ner]"
-            )
-            return None
+            detector = NERDetector(model_name=ner_model, entities=ner_entities)
+            detector._load()
+            return detector
+        except Exception as exc:
+            raise RuntimeError(
+                "NER was requested but no usable backend could be loaded. "
+                "Install a supported NER model or explicitly select use_ner=False "
+                "for reduced, regex-only protection."
+            ) from exc
 
     def detect(self, text: str) -> list[Detection]:
         """Run all enabled engines and merge results."""
@@ -97,8 +98,8 @@ class HybridDetector:
                     d for d in ner_detections if d.score >= self._ner_threshold
                 ]
                 detections = self._merge(detections, ner_detections)
-            except Exception as e:
-                logger.warning("NER detection failed, using regex only: %s", e)
+            except Exception:
+                raise RuntimeError("NER detection failed; refusing to return partially masked text") from None
 
         return detections
 
@@ -106,16 +107,5 @@ class HybridDetector:
     def _merge(
         regex_dets: list[Detection], ner_dets: list[Detection]
     ) -> list[Detection]:
-        """Merge detections, preferring regex for overlapping spans."""
-        merged = list(regex_dets)
-        regex_spans = {(d.start, d.end) for d in regex_dets}
-
-        for nd in ner_dets:
-            overlaps = any(
-                nd.start < re and nd.end > rs for rs, re in regex_spans
-            )
-            if not overlaps:
-                merged.append(nd)
-
-        merged.sort(key=lambda d: d.start)
-        return merged
+        """Keep all spans; Shield merges their unions before replacement."""
+        return sorted(regex_dets + ner_dets, key=lambda d: d.start)

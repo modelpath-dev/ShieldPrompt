@@ -15,29 +15,28 @@ _DASH_CHARS = {"\u2010", "\u2011", "\u2012", "\u2013", "\u2014", "\u2212"}
 _SPACE_CHARS = {"\u00a0", "\u2007", "\u202f", "\u2009", "\u200a", "\u2002", "\u2003"}
 
 
-def _normalize_for_match(text: str) -> str:
-    """NFKC + strip zero-width + fold exotic dashes/spaces to ASCII.
+def _normalize_with_offsets(text: str):
+    """Normalize each source character and retain its original span.
 
-    Preserves string length so detection offsets still index into the
-    original text. Zero-width chars are replaced with a space rather than
-    removed to keep positions aligned.
+    Compatibility expansions may change length. Format characters are removed
+    so inserting invisible characters cannot split a credential pattern.
     """
-    out_chars: list[str] = []
-    for ch in unicodedata.normalize("NFKC", text):
-        if ch in _ZERO_WIDTH:
-            out_chars.append(" ")
-        elif ch in _DASH_CHARS:
-            out_chars.append("-")
-        elif ch in _SPACE_CHARS:
-            out_chars.append(" ")
-        else:
-            out_chars.append(ch)
-    result = "".join(out_chars)
-    # NFKC can change length (e.g. ligatures). If so, fall back to original
-    # to keep offsets valid — we lose normalization but don't corrupt spans.
-    if len(result) != len(text):
-        return text
-    return result
+    chars, offsets = [], []
+    for index, source in enumerate(text):
+        for ch in unicodedata.normalize("NFKC", source):
+            if ch in _ZERO_WIDTH or unicodedata.category(ch) == "Cf":
+                continue
+            if ch in _DASH_CHARS:
+                ch = "-"
+            elif ch in _SPACE_CHARS:
+                ch = " "
+            chars.append(ch)
+            offsets.append((index, index + 1))
+    return "".join(chars), offsets
+
+
+def _normalize_for_match(text: str) -> str:
+    return _normalize_with_offsets(text)[0]
 
 
 @dataclass
@@ -129,8 +128,19 @@ _PATTERNS: list[tuple[str, re.Pattern, Optional[callable]]] = [
     (
         EntityType.API_KEY,
         re.compile(
-            r"\b(?:sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{36,}|gho_[A-Za-z0-9]{36,})\b"
+            r"(?<![A-Za-z0-9_])(?:sk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{20,}|github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{36,})(?![A-Za-z0-9_-])"
         ),
+        None,
+    ),
+    # Conservatively cover common numeric birth dates even without a label.
+    (
+        EntityType.DATE_OF_BIRTH,
+        re.compile(r"\b(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{4})\b"),
+        None,
+    ),
+    (
+        EntityType.MONEY,
+        re.compile(r"(?<!\w)(?:[$€£¥]\s*\d+(?:[,.]\d+)*|(?:USD|EUR|GBP|JPY|CAD|AUD)\s+\d+(?:[,.]\d+)*|\d+(?:[,.]\d+)*\s+(?:USD|EUR|GBP|JPY|CAD|AUD))(?!\w)", re.IGNORECASE),
         None,
     ),
 ]
@@ -145,28 +155,44 @@ class RegexDetector:
     def detect(self, text: str) -> list[Detection]:
         """Scan text and return all detected PII spans."""
         detections: list[Detection] = []
-        # Run regex over normalized text so Unicode dashes / zero-width chars
-        # don't let attackers slip past the patterns. Offsets stay aligned
-        # because _normalize_for_match preserves length.
-        search_text = _normalize_for_match(text)
+        # Match normalized text and map each span back to the original source.
+        search_text, offsets = _normalize_with_offsets(text)
 
         for entity_type, pattern, validator in _PATTERNS:
-            if self._entities and entity_type not in self._entities:
+            if self._entities is not None and entity_type not in self._entities:
                 continue
 
             for match in pattern.finditer(search_text):
                 # Store the original (un-normalized) substring so the vault
                 # round-trips what the user actually wrote.
-                value = text[match.start():match.end()]
-                if validator and not validator(value):
+                start, end = offsets[match.start()][0], offsets[match.end() - 1][1]
+                value = text[start:end]
+                if validator and not validator(match.group()):
                     continue
                 detections.append(
                     Detection(
                         entity_type=entity_type,
                         value=value,
-                        start=match.start(),
-                        end=match.end(),
+                        start=start,
+                        end=end,
                     )
                 )
 
         return detections
+
+
+
+def merge_overlaps(text: str, detections: list[Detection]) -> list[Detection]:
+    """Mask the union of every overlapping span; never discard exposed tails."""
+    merged: list[Detection] = []
+    for det in sorted(detections, key=lambda d: (d.start, -d.end)):
+        if not (0 <= det.start < det.end <= len(text)):
+            raise ValueError("Detector returned an invalid source span")
+        if merged and det.start < merged[-1].end:
+            previous = merged[-1]
+            previous.end = max(previous.end, det.end)
+            previous.value = text[previous.start:previous.end]
+        else:
+            merged.append(Detection(det.entity_type, text[det.start:det.end],
+                                    det.start, det.end, det.score))
+    return merged

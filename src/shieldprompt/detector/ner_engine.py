@@ -57,6 +57,11 @@ class NERDetector:
                 model=self._model_name,
                 aggregation_strategy="simple",
             )
+            labels = self._pipeline.model.config.id2label.values()
+            supported = {_LABEL_MAP[label] for label in labels if label in _LABEL_MAP}
+            if self._entities is not None and not self._entities <= supported:
+                self._pipeline = None
+                raise RuntimeError("NER model does not support all requested entity types")
             logger.info("NER model loaded: %s", self._model_name)
         except ImportError:
             raise ImportError(
@@ -76,7 +81,7 @@ class NERDetector:
             mapped = _LABEL_MAP.get(label)
             if mapped is None:
                 continue
-            if self._entities and mapped not in self._entities:
+            if self._entities is not None and mapped not in self._entities:
                 continue
 
             value = text[ent["start"]:ent["end"]]
@@ -95,3 +100,4 @@ class NERDetector:
             )
 
         return detections
+

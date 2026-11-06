@@ -2,7 +2,8 @@
 
 You talk to this script. It masks PII locally with ShieldPrompt, sends the
 masked prompt to Claude, then unmasks the reply before printing it. The
-Anthropic API only ever sees tokens like [PERSON_1] and [PHONE_NUMBER_1].
+API receives detected values as tokens such as [PERSON_1]. Detection can
+miss PII: review output and do not rely on this example as a privacy guarantee.
 
 Setup:
     pip install -e .          # from repo root, installs shieldprompt
@@ -36,7 +37,7 @@ def main() -> None:
         print("error: set ANTHROPIC_API_KEY", file=sys.stderr)
         sys.exit(1)
 
-    shield = Shield(use_ner=False)
+    shield = Shield(use_ner=True)
     client = Anthropic()
     history: list[dict] = []
 
@@ -73,3 +74,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

@@ -4,9 +4,8 @@ Preferred NER backend. Presidio's AnalyzerEngine combines spaCy NER with
 Presidio's built-in recognizers and context-aware scoring — handles PERSON,
 LOCATION, DATE, ORG, etc. far more reliably than a raw transformer.
 
-Default model is `en_core_web_sm` (~12 MB). spaCy models aren't on PyPI, so
-we auto-download on first use if the model isn't already installed — this
-keeps `pip install shieldprompt` self-contained.
+The configured spaCy model must be installed explicitly before use.
+Detection never downloads or installs executable model packages.
 """
 
 from __future__ import annotations
@@ -69,11 +68,7 @@ class PresidioDetector:
         self._analyzer = None
 
     def _ensure_spacy_model(self) -> None:
-        """Make sure the spaCy model is installed; download it if not.
-
-        spaCy models aren't on PyPI, so this is how we keep installation a
-        single `pip install` for the end user.
-        """
+        """Require an already-installed spaCy model without network side effects."""
         import spacy
 
         try:
@@ -82,10 +77,10 @@ class PresidioDetector:
         except OSError:
             pass
 
-        logger.info("spaCy model %r not found — downloading…", self._spacy_model)
-        from spacy.cli.download import download as spacy_download
-
-        spacy_download(self._spacy_model)
+        raise RuntimeError(
+            "The configured spaCy model is not installed. Install it explicitly "
+            "before enabling NER."
+        )
 
     def _load(self) -> None:
         if self._analyzer is not None:
@@ -105,12 +100,32 @@ class PresidioDetector:
             nlp_configuration={
                 "nlp_engine_name": "spacy",
                 "models": [{"lang_code": "en", "model_name": self._spacy_model}],
+                # Do not inherit Presidio defaults that may ignore or lower
+                # ORGANIZATION below our threshold in some package versions.
+                "ner_model_configuration": {
+                    "model_to_presidio_entity_mapping": {
+                        "PER": "PERSON", "PERSON": "PERSON",
+                        "LOC": "LOCATION", "LOCATION": "LOCATION",
+                        "GPE": "LOCATION", "FAC": "LOCATION",
+                        "ORG": "ORGANIZATION", "ORGANIZATION": "ORGANIZATION",
+                        "DATE": "DATE_TIME", "TIME": "DATE_TIME",
+                        "NORP": "NRP",
+                    },
+                    "labels_to_ignore": [],
+                    "low_score_entity_names": [],
+                    "default_score": 0.85,
+                },
             }
         )
         self._analyzer = AnalyzerEngine(
             nlp_engine=provider.create_engine(),
             default_score_threshold=self._score_threshold,
         )
+        supported = self._analyzer.get_supported_entities(language="en")
+        mapped = {_LABEL_MAP[label] for label in supported if label in _LABEL_MAP}
+        if self._entities is not None and not self._entities <= mapped:
+            self._analyzer = None
+            raise RuntimeError("Presidio does not support all requested entity types")
         logger.info("Presidio analyzer loaded (spacy=%s)", self._spacy_model)
 
     def detect(self, text: str) -> list[Detection]:
@@ -124,7 +139,7 @@ class PresidioDetector:
             mapped = _LABEL_MAP.get(r.entity_type)
             if mapped is None:
                 continue
-            if self._entities and mapped not in self._entities:
+            if self._entities is not None and mapped not in self._entities:
                 continue
             value = text[r.start:r.end]
             if len(value.strip()) < 2:
@@ -141,3 +156,4 @@ class PresidioDetector:
                 )
             )
         return out
+
